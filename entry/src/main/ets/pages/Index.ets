@@ -25,6 +25,8 @@ struct Index {
   @State selectedImageUri: string = '';
   @State showResult: boolean = false;
   @State resultIsLowConfidence: boolean = false;
+  @State animatedConfidencePercent: number = 0;
+  @State resultOpacity: number = 0;
   private predictor: CatDogPredictor = new CatDogPredictor();
 
   aboutToAppear(): void {
@@ -130,6 +132,8 @@ struct Index {
     this.confidencePercent = 0;
     this.showResult = false;
     this.resultIsLowConfidence = false;
+    this.animatedConfidencePercent = 0;
+    this.resultOpacity = 0;
   }
 
   private async runInference(): Promise<void> {
@@ -170,6 +174,14 @@ struct Index {
       }
 
       this.showResult = true;
+      this.resultOpacity = 0;
+      this.animatedConfidencePercent = 0;
+
+      animateTo({ duration: 600, curve: Curve.EaseOut }, () => {
+        this.resultOpacity = 1;
+        this.animatedConfidencePercent = conf;
+      });
+
       pixelMap.release();
       fileIo.closeSync(file);
       hilog.info(DOMAIN, TAG, '========== 推理完成 ==========');
@@ -185,26 +197,30 @@ struct Index {
     }
   }
 
-  private getConfidenceBarColor(): string {
+  private getConfidenceBarColor(): Resource {
     if (this.resultIsLowConfidence) {
-      return '#FF9800';
+      return $r("app.color.confidence_warn");
     }
     if (this.confidencePercent >= 90) {
-      return '#4CAF50';
+      return $r("app.color.confidence_high");
     }
     if (this.confidencePercent >= 70) {
-      return '#8BC34A';
+      return $r("app.color.confidence_medium");
     }
-    return '#CDDC39';
+    return $r("app.color.confidence_low");
   }
+
+  linearGradientOptions: LinearGradientOptions = {
+    angle: 45,
+    colors: [[Color.Red, 0.0]]
+  };
 
   build() {
     HdsNavigation(this.pathStack) {
       Flex({ direction: FlexDirection.Column, justifyContent: FlexAlign.SpaceBetween }) {
         Column() {
-          Blank().height(100)
+          Column().height(130)
           Stack({ alignContent: Alignment.Bottom }) {
-            // 1. 基础图像/占位区
             if (this.selectedImageUri.length > 0) {
               Image(this.selectedImageUri)
                 .objectFit(ImageFit.Cover)
@@ -213,76 +229,83 @@ struct Index {
                 .borderRadius(20)
             } else {
               Column({ space: 12 }) {
-                SymbolGlyph($r("sys.symbol.xmark_picture")).fontSize(100)
-                Text('拍照或选择图片').fontSize(16).fontColor('#666666')
+                SymbolGlyph($r("sys.symbol.xmark_picture")).fontSize(80).shaderStyle([new LinearGradientStyle(this.linearGradientOptions)])
+                Text('当前暂无图片').fontSize(14).fontColor(Color.Red).margin({ bottom: 20 })
+                Text('拍照或选择图片').fontSize(16).fontColor($r("app.color.text_hint"))
               }.width('100%').height('100%').justifyContent(FlexAlign.Center)
             }
 
-            // 2. 结果浮层
-            if (this.showResult && !this.isPredicting && this.selectedImageUri.length > 0) {
-              Column() {
-                Row() {
-                  Text(this.resultIsLowConfidence ? '⚠️' : '✅').fontSize(18)
-                  Text(this.resultText).fontSize(18).fontWeight(FontWeight.Bold).margin({ left: 8 })
-                }.width('100%').padding({ top: 12, left: 16 })
-
-                Text(this.confidenceText).fontSize(12).opacity(0.6).padding({ left: 16, top: 4 })
-
-                Stack({ alignContent: Alignment.Start }) {
-                  Row().width('100%').height(4).backgroundColor('#1A000000').borderRadius(2)
-                  Row().width(`${this.confidencePercent}%`).height(4)
-                    .backgroundColor(this.getConfidenceBarColor())
-                    .borderRadius(2)
-                }.margin(16)
-              }
-              .width('100%')
-              .backgroundColor('#F2FFFFFF')
-              .backdropBlur(20)
-              .borderRadius({ bottomLeft: 20, bottomRight: 20 })
-            }
-
-            // 3. 加载态
             if (this.isPredicting) {
               Column({ space: 10 }) {
-                LoadingProgress().width(32).height(32).color('#0A59F7')
-                Text('模型分析中...').fontSize(12).fontColor('#0A59F7')
+                LoadingProgress().width(32).height(32).color($r("app.color.loading_text"))
+                Text('分析中...').fontSize(12).fontColor($r("app.color.loading_text"))
               }
               .width('100%')
               .height('100%')
-              .backgroundColor('#80FFFFFF')
+              .backgroundColor($r("app.color.loading_overlay"))
               .justifyContent(FlexAlign.Center)
             }
           }
-          .borderWidth(2).borderColor('#F0F0F0')
+          .backgroundColor($r("app.color.card_bg"))
+          .borderWidth(1).borderColor($r("app.color.border_light"))
           .width('92%')
           .aspectRatio(1)
           .borderRadius(20)
-          .shadow({ radius: 20, color: '#1A000000', offsetY: 10 })
+          .shadow({ radius: 15, color: $r("app.color.shadow"), offsetY: 6 })
 
-          // 状态指示器
-          Row() {
-            Circle({ width: 7, height: 7 }).fill(this.modelStatus === '模型就绪，可以开始识别' ? $r("app.color.status_ready") : $r("app.color.status_error"))
-            Text(this.modelStatus).fontSize(14).fontColor('#666666').margin({ left: 8 })
+          if (this.showResult && !this.isPredicting && this.selectedImageUri.length > 0) {
+            Column({ space: 6 }) {
+              Row() {
+                Text(this.resultIsLowConfidence ? '⚠️' : '✅').fontSize(18)
+                Text(this.resultText).fontSize(17).fontWeight(FontWeight.Bold).margin({ left: 8 })
+              }.width('100%').margin({ bottom: 5 })
+              Row() {
+                Text('置信度').fontSize(14)
+                Text(`${this.animatedConfidencePercent.toFixed(0)}%`).fontSize(14)
+              }.width('100%').justifyContent(FlexAlign.SpaceBetween)
+              Stack({ alignContent: Alignment.Start }) {
+                Row().width('100%').height(6).backgroundColor($r("app.color.bar_track")).borderRadius(3)
+                Row().width(`${this.animatedConfidencePercent}%`).height(6)
+                  .backgroundColor(this.getConfidenceBarColor())
+                  .borderRadius(3)
+                  .animation({ duration: 500, curve: Curve.EaseOut })
+              }
+            }
+            .margin(16)
+            .padding(12)
+            .width('92%')
+            .backgroundColor($r("app.color.result_card_bg"))
+            .borderRadius(16)
+            .opacity(this.resultOpacity)
+            .margin({ top: 12 })
+            .transition(TransitionEffect.OPACITY.animation({ duration: 300 }))
           }
-          .padding({ top: 20 })
         }
         .width('100%')
         .flexGrow(1)
+
         Column() {
+          Row() {
+            Circle({ width: 7, height: 7 }).fill(this.modelStatus === '模型就绪，可以开始识别' ? $r("app.color.status_ready") : $r("app.color.status_error"))
+            Text(this.modelStatus).fontSize(14).fontColor($r("app.color.text_hint")).margin({ left: 8 })
+          }
+          .margin({ bottom: 20 })
           Text(`Powered by MindSpore Lite · MobileNetV2`)
-            .fontColor("#AAAAAA")
+            .fontColor($r("app.color.text_footer"))
             .fontSize(11)
             .margin(2)
           Text('HarmonyOS App by Ray Chen (Rayawa)')
-            .fontColor("#AAAAAA")
+            .fontColor($r("app.color.text_footer"))
             .fontSize(11)
         }
+        .margin({ bottom: 30 })
         .width('100%')
       }
       .width("100%")
       .height("100%")
       .backgroundColor($r("app.color.app_bg"))
     }
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
     .mode(NavigationMode.Stack)
     .width("100%")
     .titleMode(HdsNavigationTitleMode.MINI)
