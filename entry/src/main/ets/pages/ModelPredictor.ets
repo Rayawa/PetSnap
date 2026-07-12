@@ -14,11 +14,10 @@ export class ModelConfig {
   static readonly INPUT_WIDTH: number = 224;
   static readonly RESIZE_SHORT: number = 256;
   static readonly CROP_OFFSET: number = 16;
-  // ImageNet 标准化参数（MobileNetV2 训练时使用）
   static readonly MEANS: number[] = [0.485, 0.456, 0.406];
   static readonly STDS: number[] = [0.229, 0.224, 0.225];
-  // 分类标签
   static readonly LABELS: string[] = ['cat', 'dog'];
+  static readonly CONFIDENCE_THRESHOLD: number = 0.7;
 }
 
 /**
@@ -161,9 +160,16 @@ export class CatDogPredictor {
       const outputs: mindSporeLite.MSTensor[] = await this.model.predict(inputs);
       hilog.info(0xFF00, TAG, `推理完成, 输出张量数: ${outputs.length}`);
 
-      // 4. 解析输出 —— 2 分类, Softmax 输出
-      const outputData = new Float32Array(outputs[0].getData());
-      hilog.info(0xFF00, TAG, `原始输出: [${outputData[0].toFixed(4)}, ${outputData[1].toFixed(4)}]`);
+      // 4. 解析输出 —— 2 分类, 手动计算 Softmax
+      const rawOutput = new Float32Array(outputs[0].getData());
+      hilog.info(0xFF00, TAG, `原始 logits: [${rawOutput[0].toFixed(4)}, ${rawOutput[1].toFixed(4)}]`);
+
+      const maxVal: number = Math.max(rawOutput[0], rawOutput[1]);
+      const exp0: number = Math.exp(rawOutput[0] - maxVal);
+      const exp1: number = Math.exp(rawOutput[1] - maxVal);
+      const sum: number = exp0 + exp1;
+      const outputData: Float32Array = new Float32Array([exp0 / sum, exp1 / sum]);
+      hilog.info(0xFF00, TAG, `Softmax 后: [${outputData[0].toFixed(4)}, ${outputData[1].toFixed(4)}]`);
 
       // 5. 后处理：生成带标签和置信度的结果
       const results: PredictionResult[] = [];

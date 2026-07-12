@@ -1,375 +1,369 @@
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { image } from '@kit.ImageKit';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { camera, cameraPicker } from '@kit.CameraKit';
 import { CatDogPredictor, ModelConfig, PredictionResult } from './ModelPredictor';
+import { HdsNavigation, HdsNavigationTitleMode, ScrollEffectType } from '@hms.hds.hdsBaseComponent';
+import { LengthMetrics } from '@kit.ArkUI';
+import { hdsMaterial, TitleSize } from '@kit.UIDesignKit';
 
 const TAG = 'PetSnap';
+const DOMAIN = 0xFF00;
 
 @Entry
 @Component
 struct Index {
-  // ==================== 状态变量 ====================
+  @Provide pathStack: NavPathStack = new NavPathStack();
 
-  /** 模型加载状态 */
   @State modelStatus: string = '正在加载模型...';
-  /** 模型加载进度颜色 */
   @State modelStatusColor: string = '#FF9800';
-  /** 预测结果文本 */
   @State resultText: string = '';
-  /** 预测置信度 */
   @State confidenceText: string = '';
-  /** 结果区域的背景色（根据分类变化） */
-  @State resultBgColor: string = '#F5F5F5';
-  /** 是否正在推理 */
+  @State confidencePercent: number = 0;
   @State isPredicting: boolean = false;
-  /** 选中的图片 URI */
   @State selectedImageUri: string = '';
-  /** 上次分类的 top label */
-  @State private lastTopLabel: string = '';
-  /** 选择的图片文件描述符 (fd) */
-  private selectedFd: number = -1;
-
-  /** 模型推理器 */
+  @State showResult: boolean = false;
+  @State resultIsLowConfidence: boolean = false;
   private predictor: CatDogPredictor = new CatDogPredictor();
 
-  // ==================== 生命周期 ====================
-
   aboutToAppear(): void {
-    // 页面出现时加载模型
+    hilog.info(DOMAIN, TAG, '========== 页面启动 ==========');
     this.initModel();
   }
 
   aboutToDisappear(): void {
-    // 页面销毁时释放模型
+    hilog.info(DOMAIN, TAG, '========== 页面销毁 ==========');
     this.predictor.release();
   }
 
-  /**
-   * 初始化模型 —— 从 rawfile 加载 pet.ms
-   */
   private async initModel(): Promise<void> {
+    hilog.info(DOMAIN, TAG, '开始加载模型');
     try {
-      const uiContext = this.getUIContext();
-      if (!uiContext) {
-        this.modelStatus = 'UI上下文获取失败';
-        this.modelStatusColor = '#F44336';
-        return;
-      }
-      const hostContext = uiContext.getHostContext();
-      if (!hostContext) {
-        this.modelStatus = 'Host上下文获取失败';
-        this.modelStatusColor = '#F44336';
-        return;
-      }
-      const resMgr = hostContext.resourceManager;
-
-      await this.predictor.loadModel(resMgr);
-      this.modelStatus = '模型已就绪';
-      this.modelStatusColor = '#4CAF50';
-    } catch (err) {
-      this.modelStatus = `模型加载失败: ${err}`;
-      this.modelStatusColor = '#F44336';
-      hilog.error(0xFF00, TAG, `模型初始化失败: ${JSON.stringify(err)}`);
-    }
-  }
-
-  // ==================== 图片选择 ====================
-
-  /**
-   * 从相册选择图片
-   */
-  private async pickFromGallery(): Promise<void> {
-    try {
-      const photoOptions = new photoAccessHelper.PhotoSelectOptions();
-      photoOptions.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE;
-      photoOptions.maxSelectNumber = 1;
-
-      const photoPicker = new photoAccessHelper.PhotoViewPicker();
-      const result: photoAccessHelper.PhotoSelectResult = await photoPicker.select(photoOptions);
-
-      if (result.photoUris.length === 0) {
-        return;
-      }
-
-      this.selectedImageUri = result.photoUris[0];
-      this.resultText = '';
-      this.confidenceText = '';
-      this.lastTopLabel = '';
-      hilog.info(0xFF00, TAG, `已选择图片: ${this.selectedImageUri}`);
-
-      // 自动执行推理
-      await this.runInference();
-    } catch (err) {
-      this.resultText = `选择图片失败: ${JSON.stringify(err)}`;
-      this.resultBgColor = '#FFEBEE';
-      this.lastTopLabel = '';
-      hilog.error(0xFF00, TAG, `选择图片失败: ${JSON.stringify(err)}`);
-    }
-  }
-
-  /**
-   * 打开相机拍照（占位，真机再实现）
-   */
-  private async takePhoto(): Promise<void> {
-    this.resultText = '请使用真机测试拍照功能\n当前请使用"从相册选择"';
-    this.resultBgColor = '#FFF3E0';
-    this.confidenceText = '';
-    this.lastTopLabel = '';
-  }
-
-  // ==================== 图片预处理 ====================
-
-  /**
-   * 图片预处理 pipeline —— 与训练时完全一致
-   *
-   *   原始图片 → Resize(256, 256) → CenterCrop(16, 16, 224, 224) → 标准化 (ModelPredictor 内部)
-   */
-  private async preprocessImage(fd: number): Promise<image.PixelMap> {
-    const imageSource: image.ImageSource = image.createImageSource(fd);
-    if (imageSource === undefined) {
-      throw new Error('创建 ImageSource 失败');
-    }
-
-    const pixelMap = await imageSource.createPixelMap();
-    const info = await pixelMap.getImageInfo();
-    const origW: number = info.size.width;
-    const origH: number = info.size.height;
-    hilog.info(0xFF00, TAG, `原始图片尺寸: ${origW} x ${origH}`);
-
-    const resizeRatio: number = ModelConfig.RESIZE_SHORT / Math.min(origW, origH);
-    const targetW: number = Math.round(origW * resizeRatio);
-    const targetH: number = Math.round(origH * resizeRatio);
-    await pixelMap.scale(resizeRatio, resizeRatio);
-    hilog.info(0xFF00, TAG, `Resize 后: ${targetW} x ${targetH}`);
-
-    const scaleInfo = await pixelMap.getImageInfo();
-    const scaledW: number = scaleInfo.size.width;
-    const scaledH: number = scaleInfo.size.height;
-    const cropX: number = Math.round((scaledW - ModelConfig.INPUT_WIDTH) / 2);
-    const cropY: number = Math.round((scaledH - ModelConfig.INPUT_HEIGHT) / 2);
-    hilog.info(0xFF00, TAG, `Crop 偏移: x=${cropX}, y=${cropY}`);
-
-    await pixelMap.crop({
-      x: cropX,
-      y: cropY,
-      size: { width: ModelConfig.INPUT_WIDTH, height: ModelConfig.INPUT_HEIGHT }
-    });
-
-    const cropInfo = await pixelMap.getImageInfo();
-    hilog.info(0xFF00, TAG, `Crop 后: ${cropInfo.size.width} x ${cropInfo.size.height}`);
-
-    return pixelMap;
-  }
-
-  // ==================== 推理 ====================
-
-  /**
-   * 执行完整的推理流程
-   */
-  private async runInference(): Promise<void> {
-    if (!this.predictor.isModelLoaded) {
-      this.resultText = '模型尚未加载';
-      this.resultBgColor = '#FFEBEE';
-      this.lastTopLabel = '';
-      return;
-    }
-
-    if (!this.selectedImageUri) {
-      this.resultText = '请先选择一张图片';
-      this.resultBgColor = '#FFF3E0';
-      this.lastTopLabel = '';
-      return;
-    }
-
-    this.isPredicting = true;
-    this.resultText = '正在识别...';
-    this.resultBgColor = '#FFF3E0';
-
-    try {
-      // 1. 通过 URI 打开文件获取 fd
-      const file = fileIo.openSync(this.selectedImageUri, fileIo.OpenMode.READ_ONLY);
-      this.selectedFd = file.fd;
-      hilog.info(0xFF00, TAG, `文件已打开, fd=${file.fd}`);
-
-      // 2. 图片预处理
-      const processedPixelMap = await this.preprocessImage(file.fd);
-
-      // 3. 模型推理
-      const results: PredictionResult[] = await this.predictor.predict(processedPixelMap);
-
-      // 4. 关闭文件
-      fileIo.closeSync(file);
-      this.selectedFd = -1;
-
-      // 5. 展示结果
-      const topResult = results[0];
-      this.lastTopLabel = topResult.label;
-      if (topResult.label === 'cat') {
-        this.resultText = '🐱 猫';
-        this.resultBgColor = '#E8F5E9';
+      const hostContext = this.getUIContext().getHostContext();
+      if (hostContext !== undefined) {
+        const resMgr = hostContext.resourceManager;
+        await this.predictor.loadModel(resMgr);
+        this.modelStatus = '模型就绪，可以开始识别';
+        this.modelStatusColor = '#4CAF50';
+        hilog.info(DOMAIN, TAG, '模型初始化成功');
       } else {
-        this.resultText = '🐶 狗';
-        this.resultBgColor = '#FFF8E1';
+        hilog.error(DOMAIN, TAG, 'hostContext 为 undefined，模型初始化失败');
+        this.modelStatus = '初始化失败';
+        this.modelStatusColor = '#F44336';
       }
-      this.confidenceText =
-        `置信度: ${(topResult.confidence * 100).toFixed(1)}%\n` +
-        `Cat: ${((results.find(r => r.label === 'cat')?.confidence ?? 0) * 100).toFixed(1)}%  |  ` +
-        `Dog: ${((results.find(r => r.label === 'dog')?.confidence ?? 0) * 100).toFixed(1)}%`;
-
-      hilog.info(0xFF00, TAG, `最终结果: ${this.resultText} ${this.confidenceText}`);
-
     } catch (err) {
-      this.resultText = `识别失败: ${err}`;
-      this.resultBgColor = '#FFEBEE';
-      this.lastTopLabel = '';
-      hilog.error(0xFF00, TAG, `推理失败: ${JSON.stringify(err)}`);
+      hilog.error(DOMAIN, TAG, `模型初始化异常: ${JSON.stringify(err)}`);
+      this.modelStatus = '模型加载失败';
+      this.modelStatusColor = '#F44336';
+    }
+  }
+
+  private async pickFromGallery(): Promise<void> {
+    hilog.info(DOMAIN, TAG, '========== 打开相册选取 ==========');
+    try {
+      const photoPicker = new photoAccessHelper.PhotoViewPicker();
+      const result = await photoPicker.select({
+        MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE,
+        maxSelectNumber: 1
+      });
+      hilog.info(DOMAIN, TAG, `相册选取完成, 图片数: ${result.photoUris.length}`);
+      if (result.photoUris.length > 0) {
+        this.selectedImageUri = result.photoUris[0];
+        hilog.info(DOMAIN, TAG, `选中图片: ${this.selectedImageUri}`);
+        this.resetResult();
+        this.runInference();
+      } else {
+        hilog.warn(DOMAIN, TAG, '用户取消相册选取');
+      }
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, `相册选取异常: ${JSON.stringify(err)}`);
+    }
+  }
+
+  private async takePhoto(): Promise<void> {
+    hilog.info(DOMAIN, TAG, '========== 启动拍照 ==========');
+    const hostContext = this.getUIContext().getHostContext();
+    if (hostContext === undefined) {
+      hilog.error(DOMAIN, TAG, '拍照失败: hostContext 为 undefined');
+      return;
+    }
+
+    try {
+      const pathDir: string = hostContext.filesDir;
+      const fileName: string = `photo_${Date.now()}.jpg`;
+      const filePath: string = `${pathDir}/${fileName}`;
+      hilog.info(DOMAIN, TAG, `创建临时文件: ${filePath}`);
+      const tmpFile = fileIo.openSync(filePath, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE);
+      fileIo.closeSync(tmpFile);
+
+      const saveUri: string = fileUri.getUriFromPath(filePath);
+      hilog.info(DOMAIN, TAG, `saveUri: ${saveUri}`);
+
+      const pickerProfile: cameraPicker.PickerProfile = {
+        cameraPosition: camera.CameraPosition.CAMERA_POSITION_BACK,
+        saveUri: saveUri
+      };
+
+      hilog.info(DOMAIN, TAG, '调用系统相机');
+      const result: cameraPicker.PickerResult = await cameraPicker.pick(
+        hostContext, [cameraPicker.PickerMediaType.PHOTO], pickerProfile
+      );
+      hilog.info(DOMAIN, TAG, `拍照返回: resultCode=${result.resultCode}, uri=${result.resultUri}`);
+
+      if (result.resultCode === 0 && result.resultUri.length > 0) {
+        this.selectedImageUri = result.resultUri;
+        hilog.info(DOMAIN, TAG, `拍照成功, 图片: ${this.selectedImageUri}`);
+        this.resetResult();
+        this.runInference();
+      } else {
+        hilog.warn(DOMAIN, TAG, `用户取消拍照, resultCode=${result.resultCode}`);
+      }
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, `拍照异常: ${JSON.stringify(err)}`);
+    }
+  }
+
+  private resetResult(): void {
+    this.resultText = '';
+    this.confidenceText = '';
+    this.confidencePercent = 0;
+    this.showResult = false;
+    this.resultIsLowConfidence = false;
+  }
+
+  private async runInference(): Promise<void> {
+    hilog.info(DOMAIN, TAG, '========== 开始推理 ==========');
+    this.isPredicting = true;
+    this.showResult = false;
+
+    try {
+      const file = fileIo.openSync(this.selectedImageUri, fileIo.OpenMode.READ_ONLY);
+      hilog.info(DOMAIN, TAG, `打开图片文件成功, fd: ${file.fd}`);
+
+      const imageSource: image.ImageSource = image.createImageSource(file.fd);
+      const pixelMap: image.PixelMap = await imageSource.createPixelMap();
+      const imageInfo: image.ImageInfo = pixelMap.getImageInfoSync();
+      hilog.info(DOMAIN, TAG, `PixelMap 创建成功, 尺寸: ${imageInfo.size.width}x${imageInfo.size.height}`);
+
+      const results: PredictionResult[] = await this.predictor.predict(pixelMap);
+      const top: PredictionResult = results[0];
+      const conf: number = top.confidence * 100;
+
+      hilog.info(DOMAIN, TAG, `推理结果: label=${top.label}, confidence=${conf.toFixed(2)}%`);
+      hilog.info(DOMAIN, TAG, `置信度阈值: ${(ModelConfig.CONFIDENCE_THRESHOLD * 100).toFixed(0)}%`);
+
+      this.confidencePercent = conf;
+
+      if (top.confidence < ModelConfig.CONFIDENCE_THRESHOLD) {
+        hilog.warn(DOMAIN, TAG,
+          `置信度 ${conf.toFixed(2)}% 低于阈值, 判定为非猫狗图片`);
+        this.resultIsLowConfidence = true;
+        this.resultText = '未能识别为猫或狗';
+        this.confidenceText =
+          `最高置信度 ${conf.toFixed(1)}%（${top.label === 'cat' ? '像猫' : '像狗'}），低于识别阈值 ${(ModelConfig.CONFIDENCE_THRESHOLD * 100).toFixed(0)}%`;
+      } else {
+        hilog.info(DOMAIN, TAG, `识别成功: ${top.label}`);
+        this.resultIsLowConfidence = false;
+        this.resultText = top.label === 'cat' ? '猫' : '狗';
+        this.confidenceText = `置信度 ${conf.toFixed(1)}%`;
+      }
+
+      this.showResult = true;
+      pixelMap.release();
+      fileIo.closeSync(file);
+      hilog.info(DOMAIN, TAG, '========== 推理完成 ==========');
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, `推理异常: ${JSON.stringify(err)}`);
+      this.resultText = '识别失败，请重试';
+      this.confidenceText = '';
+      this.confidencePercent = 0;
+      this.resultIsLowConfidence = true;
+      this.showResult = true;
     } finally {
       this.isPredicting = false;
     }
   }
 
-  // ==================== UI 构建 ====================
+  private getConfidenceBarColor(): string {
+    if (this.resultIsLowConfidence) {
+      return '#FF9800';
+    }
+    if (this.confidencePercent >= 90) {
+      return '#4CAF50';
+    }
+    if (this.confidencePercent >= 70) {
+      return '#8BC34A';
+    }
+    return '#CDDC39';
+  }
 
   build() {
-    Column() {
-      // ---- 标题栏 ----
-      Row() {
-        Text('PetSnap 猫狗分类识别')
-          .fontSize(22)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#333333')
-      }
-      .width('100%')
-      .height(56)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor('#FFFFFF')
-      .shadow({ radius: 4, color: '#10000000', offsetY: 2 })
-
-      // ---- 状态指示 ----
-      Row() {
-        Stack()
-          .width(8)
-          .height(8)
-          .backgroundColor(this.modelStatusColor)
-          .borderRadius(4)
-        Text(this.modelStatus)
-          .fontSize(14)
-          .fontColor(this.modelStatusColor)
-          .margin({ left: 6 })
-      }
-      .margin({ top: 12, bottom: 4 })
-
-      // ---- 图片预览区域 ----
-      Column() {
-        if (this.selectedImageUri) {
-          Image(this.selectedImageUri)
-            .objectFit(ImageFit.Contain)
-            .width('100%')
-            .height('100%')
-        } else {
-          Column() {
-            Text('📷')
-              .fontSize(48)
-              .margin({ bottom: 8 })
-            Text('选择一张猫或狗的照片')
-              .fontSize(15)
-              .fontColor('#999999')
-          }
-        }
-      }
-      .width('100%')
-      .height(280)
-      .backgroundColor('#FAFAFA')
-      .borderRadius(12)
-      .justifyContent(FlexAlign.Center)
-      .margin({ left: 16, right: 16, top: 12 })
-
-      // ---- 操作按钮 ----
-      Row() {
-        // 相册选择
-        Button() {
-          Text('从相册选择')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-        }
-        .type(ButtonType.Capsule)
-        .backgroundColor('#E3F2FD')
-        .fontColor('#1565C0')
-        .layoutWeight(1)
-        .height(44)
-        .margin({ right: 8 })
-        .onClick(() => {
-          this.pickFromGallery();
-        })
-
-        // 拍照（暂用相同逻辑示意，真实设备上走 takePhoto）
-        Button() {
-          Text('拍照识别')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-        }
-        .type(ButtonType.Capsule)
-        .backgroundColor('#FFF3E0')
-        .fontColor('#E65100')
-        .layoutWeight(1)
-        .height(44)
-        .margin({ left: 8 })
-        .onClick(() => {
-          this.takePhoto();
-        })
-      }
-      .width('100%')
-      .padding({ left: 16, right: 16 })
-      .margin({ top: 12 })
-
-      // ---- 推理中 Loading ----
-      if (this.isPredicting) {
-        LoadingProgress()
-          .width(36)
-          .height(36)
-          .color('#1565C0')
-          .margin({ top: 16 })
-        Text('模型推理中...')
-          .fontSize(14)
-          .fontColor('#666666')
-          .margin({ top: 8 })
-      }
-
-      // ---- 识别结果 ----
-      if (this.resultText && !this.isPredicting) {
+    HdsNavigation(this.pathStack) {
+      Flex({ direction: FlexDirection.Column, justifyContent: FlexAlign.SpaceBetween }) {
         Column() {
-          Text(this.resultText)
-            .fontSize(24)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.lastTopLabel === 'cat' ? '#2E7D32' : (this.lastTopLabel === 'dog' ? '#E65100' : '#666666'))
+          Blank().height(100)
+          Stack({ alignContent: Alignment.Bottom }) {
+            // 1. 基础图像/占位区
+            if (this.selectedImageUri.length > 0) {
+              Image(this.selectedImageUri)
+                .objectFit(ImageFit.Cover)
+                .width('100%')
+                .height('100%')
+                .borderRadius(20)
+            } else {
+              Column({ space: 12 }) {
+                SymbolGlyph($r("sys.symbol.xmark_picture")).fontSize(100)
+                Text('拍照或选择图片').fontSize(16).fontColor('#666666')
+              }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+            }
 
-          if (this.confidenceText) {
-            Text(this.confidenceText)
-              .fontSize(14)
-              .fontColor('#666666')
-              .margin({ top: 8 })
-              .textAlign(TextAlign.Center)
+            // 2. 结果浮层
+            if (this.showResult && !this.isPredicting && this.selectedImageUri.length > 0) {
+              Column() {
+                Row() {
+                  Text(this.resultIsLowConfidence ? '⚠️' : '✅').fontSize(18)
+                  Text(this.resultText).fontSize(18).fontWeight(FontWeight.Bold).margin({ left: 8 })
+                }.width('100%').padding({ top: 12, left: 16 })
+
+                Text(this.confidenceText).fontSize(12).opacity(0.6).padding({ left: 16, top: 4 })
+
+                Stack({ alignContent: Alignment.Start }) {
+                  Row().width('100%').height(4).backgroundColor('#1A000000').borderRadius(2)
+                  Row().width(`${this.confidencePercent}%`).height(4)
+                    .backgroundColor(this.getConfidenceBarColor())
+                    .borderRadius(2)
+                }.margin(16)
+              }
+              .width('100%')
+              .backgroundColor('#F2FFFFFF')
+              .backdropBlur(20)
+              .borderRadius({ bottomLeft: 20, bottomRight: 20 })
+            }
+
+            // 3. 加载态
+            if (this.isPredicting) {
+              Column({ space: 10 }) {
+                LoadingProgress().width(32).height(32).color('#0A59F7')
+                Text('模型分析中...').fontSize(12).fontColor('#0A59F7')
+              }
+              .width('100%')
+              .height('100%')
+              .backgroundColor('#80FFFFFF')
+              .justifyContent(FlexAlign.Center)
+            }
           }
+          .borderWidth(2).borderColor('#F0F0F0')
+          .width('92%')
+          .aspectRatio(1)
+          .borderRadius(20)
+          .shadow({ radius: 20, color: '#1A000000', offsetY: 10 })
+
+          // 状态指示器
+          Row() {
+            Circle({ width: 7, height: 7 }).fill(this.modelStatus === '模型就绪，可以开始识别' ? $r("app.color.status_ready") : $r("app.color.status_error"))
+            Text(this.modelStatus).fontSize(14).fontColor('#666666').margin({ left: 8 })
+          }
+          .padding({ top: 20 })
         }
         .width('100%')
-        .padding({ top: 16, bottom: 16, left: 16, right: 16 })
-        .backgroundColor(this.resultBgColor)
-        .borderRadius(12)
-        .margin({ left: 16, right: 16, top: 16 })
+        .flexGrow(1)
+        Column() {
+          Text(`Powered by MindSpore Lite · MobileNetV2`)
+            .fontColor("#AAAAAA")
+            .fontSize(11)
+            .margin(2)
+          Text('HarmonyOS App by Ray Chen (Rayawa)')
+            .fontColor("#AAAAAA")
+            .fontSize(11)
+        }
+        .width('100%')
       }
-
-      // ---- 底部空白 ----
-      Blank()
-
-      // ---- 底部提示 ----
-      Text('Powered by MindSpore Lite · MobileNetV2')
-        .fontSize(11)
-        .fontColor('#BBBBBB')
-        .margin({ bottom: 12 })
+      .width("100%")
+      .height("100%")
+      .backgroundColor($r("app.color.app_bg"))
     }
-    .width('100%')
-    .height('100%')
-    .backgroundColor('#F2F2F7')
+    .mode(NavigationMode.Stack)
+    .width("100%")
+    .titleMode(HdsNavigationTitleMode.MINI)
+    .hideBackButton(true)
+    .titleBar({
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR,
+          blurEffectiveStartOffset: LengthMetrics.vp(0),
+          blurEffectiveEndOffset: LengthMetrics.vp(20),
+        },
+        originalStyle: {
+          backgroundStyle: {
+            backgroundColor: $r("sys.color.ohos_id_color_background"),
+          },
+          contentStyle: {
+            titleStyle: {
+              mainTitleColor: $r("sys.color.font_primary"),
+              subTitleColor: $r("sys.color.font_secondary"),
+            },
+            menuStyle: {
+              backgroundColor: $r("sys.color.comp_background_tertiary"),
+              iconColor: $r("sys.color.icon_primary"),
+            },
+            backIconStyle: {
+              backgroundColor: $r("sys.color.comp_background_tertiary"),
+              iconColor: $r("sys.color.icon_primary"),
+            },
+          },
+        },
+        scrollEffectStyle: {
+          backgroundStyle: {
+            backgroundColor: $r("sys.color.ohos_id_color_background_transparent"),
+          },
+          contentStyle: {
+            titleStyle: {
+              mainTitleColor: $r("sys.color.font_primary"),
+              subTitleColor: $r("sys.color.font_secondary"),
+            },
+            menuStyle: {
+              backgroundColor: $r("sys.color.comp_background_tertiary"),
+              iconColor: $r("sys.color.icon_primary"),
+            },
+            backIconStyle: {
+              backgroundColor: $r("sys.color.comp_background_tertiary"),
+              iconColor: $r("sys.color.icon_primary"),
+            },
+          },
+        },
+        systemMaterialEffect: {
+          materialType: hdsMaterial.MaterialType.IMMERSIVE,
+          materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
+        }
+      },
+      content: {
+        title: {
+          mainTitle: "PetSnap猫狗识别",
+          mainTitleSize: TitleSize.TITLE_ML,
+        },
+        menu: {
+          value: [
+            {
+              content: {
+                label: "camera",
+                icon: $r("sys.symbol.camera"),
+                isEnabled: true,
+                action: () => { this.takePhoto() }
+              },
+            },
+            {
+              content: {
+                label: "picture",
+                icon: $r("sys.symbol.picture"),
+                isEnabled: true,
+                action: () => { this.pickFromGallery() }
+              },
+            },
+          ],
+        },
+      },
+    });
   }
 }

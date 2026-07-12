@@ -1,8 +1,13 @@
 {
   "color": [
-    {
-      "name": "start_window_background",
-      "value": "#000000"
-    }
+    { "name": "start_window_background", "value": "#000000" },
+    { "name": "app_bg", "value": "#121214" },
+    { "name": "card_bg", "value": "#2C2C2E" },
+    { "name": "text_primary", "value": "#FFFFFF" },
+    { "name": "text_secondary", "value": "#AAAAAA" },
+    { "name": "status_ready", "value": "#4CAF50" },
+    { "name": "status_error", "value": "#F44336" },
+    { "name": "result_mask", "value": "#CC000000" },
+    { "name": "loading_mask", "value": "#66000000" }
   ]
 }
