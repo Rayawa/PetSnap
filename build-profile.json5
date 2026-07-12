@@ -1,11 +1,25 @@
 {
   "app": {
-    "signingConfigs": [],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/raychen/.ohos/config/default_PetSnap-HarmonyOS__G5dAWgAkqp6pRdcLmgWZOlCraQ6DnfYt4M31B9x1bc=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001BFE0CAF65B012B7F69B5765FABAD746B32E405BF0EBE3A5BEAB7C71F9DD369860DDCEA3CFFC00E1",
+          "profile": "/Users/raychen/.ohos/config/default_PetSnap-HarmonyOS__G5dAWgAkqp6pRdcLmgWZOlCraQ6DnfYt4M31B9x1bc=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/raychen/.ohos/config/default_PetSnap-HarmonyOS__G5dAWgAkqp6pRdcLmgWZOlCraQ6DnfYt4M31B9x1bc=.p12",
+          "storePassword": "0000001BA923D6D61631BD6FD53197CE4904226B7B746A0985ABF09B96EEF3AF0C794BEC1862A9044610EF"
+        }
+      }
+    ],
     "products": [
       {
         "name": "default",
         "signingConfig": "default",
-        "targetSdkVersion": "26.0.0",
+        "targetSdkVersion": "6.0.1(21)",
         "compatibleSdkVersion": "6.0.1(21)",
         "runtimeOS": "HarmonyOS",
         "buildOption": {
